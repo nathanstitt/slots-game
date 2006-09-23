@@ -1,13 +1,9 @@
 /*
- * This code was created by Jeff Molofee '99 
- * (ported to Linux/SDL by Ti Leggett '01)
- *
- * If you've found this code useful, please let me know.
- *
- * Visit Jeff at http://nehe.gamedev.net/
- * 
- * or for port-specific comments, questions, bugreports etc. 
- * email to leggett@eecs.tulane.edu
+  A Slot machine game with weighted odds
+  of winning 1/3 of the time.
+  also has cheats!
+
+  Nathan Stitt - 2006
  */
  
 #include <stdio.h>
@@ -945,31 +941,36 @@ drawReels(){
 /* Here goes our drawing code */
 int drawGLScene( GLvoid )
 {
-	/* Clear The Screen And The Depth Buffer */
-	glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
-
-	/* Reset the view */
-	glLoadIdentity( );
 
 	/* These are to calculate our fps */
 	static GLint T0     = 0;
 	static GLint Frames = 0;
 
-// 	
-	drawLogo();
-	drawReels();
-//	drawFireWorks();
- 	if ( Reel::all_stopped() && Reel::winner() != -1 ){
- 		drawFireWorks();
- 	}
+	GLint t = SDL_GetTicks();
 
-	/* Draw it to the screen */
-	SDL_GL_SwapBuffers( );
+ 	if ( t-T0 >= 10 ){
+		T0 = t;
+		/* Clear The Screen And The Depth Buffer */
+		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+
+		/* Reset the view */
+		glLoadIdentity( );
+
+		drawLogo();
+		drawReels();
+//		drawFireWorks();
+		if ( Reel::all_stopped() && Reel::winner() != -1 ){
+			drawFireWorks();
+		}
+		/* Draw it to the screen */
+		SDL_GL_SwapBuffers( );
+
+	}
+
 
 	/* Gather our frames per second */
 	Frames++;
 	{
-		GLint t = SDL_GetTicks();
 		if (t - T0 >= 5000) {
 			GLfloat seconds = (t - T0) / 1000.0;
 			GLfloat fps = Frames / seconds;
