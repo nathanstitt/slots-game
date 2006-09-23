@@ -15,11 +15,15 @@
 #include <GL/gl.h>
 #include <GL/glu.h>
 #include "SDL/SDL.h"
+#include "time.h"
 #include "SDL/SDL_mixer.h"
-
+#include <boost/algorithm/string.hpp>
+#include <boost/lexical_cast.hpp>
+#include <vector>
 #include <iostream>
 #include <math.h>
 #include <fstream>
+#include <map>
 
 using namespace std;
 
@@ -27,6 +31,7 @@ using namespace std;
 #define TRUE  1
 #define FALSE 0
 
+#define RECORDS_LOG_FILE "/home/nas/slots-records.csv"
 /* screen width, height, and bit depth */
 #define SCREEN_WIDTH  1024
 #define SCREEN_HEIGHT  768
@@ -36,28 +41,20 @@ using namespace std;
 #define MAX_PARTICLES 1000
 
 
-int rainbow = TRUE;    /* Toggle rainbow effect                              */
-
-float slowdown = 3.0f; /* Slow Down Particles                                */
-float xspeed;          /* Base X Speed (To Allow Keyboard Direction Of Tail) */
-float yspeed=138;          /* Base Y Speed (To Allow Keyboard Direction Of Tail) */
-float zoom = -40.0f;   /* Used To Zoom Out                                   */
-
-GLuint loop;           /* Misc Loop Variable                                 */
-GLuint col = 0;        /* Current Color Selection                            */
-GLuint delay;          /* Rainbow Effect Delay                               */
 
 // flag logo
 GLfloat flag_x_axis=180;            /* X Rotation */
 bool flag_up=false;
 float points[45][45][3]; /* The Points On The Grid Of Our "Wave" */
 int wiggle_count = 0;    /* Counter Used To Control How Fast Flag Waves */
-GLfloat hold;            /* Temporarily Holds A Floating Point Value */
+GLfloat hold;            /* Temporarily Holds A Floating ioint Value */
 
-
+static std::ofstream records;
+typedef std::map<int,time_t> patrons_t;
+static patrons_t patrons;
 
 /* Create our particle structure */
-typedef struct
+struct Particle
 {
     int   active; /* Active (Yes/No) */
     float life;   /* Particle Life   */
@@ -78,7 +75,7 @@ typedef struct
     float xg;     /* X Gravity       */
     float yg;     /* Y Gravity       */
     float zg;     /* Z Gravity       */
-} particle;
+} ;
 
 /* Rainbow of colors */
 static GLfloat colors[12][3] =
@@ -96,11 +93,6 @@ static GLfloat colors[12][3] =
 	{ 1.0f,  0.5f,  1.0f},
 	{ 1.0f,  0.5f,  0.75f}
 };
-
-/* Our beloved array of particles */
-particle particles[MAX_PARTICLES];
-
-
 
 /* This is our SDL surface */
 SDL_Surface *surface;
@@ -122,6 +114,193 @@ GLuint reels_tex;
 GLuint fireworks_tex;
 GLuint logo_tex;
 
+int
+play_wav(const char* name)
+{
+	
+	Mix_Chunk *sound = Mix_LoadWAV(name);
+	if(sound == NULL) {
+		fprintf(stderr, "Unable to load WAV file: %s - %s\n", name, Mix_GetError() );
+		return -1;
+	} else {
+		int channel=Mix_PlayChannel(-1, sound, 0);
+		if(channel == -1) {
+			fprintf(stderr, "Unable to play WAV file: %s - %s\n", name, Mix_GetError() );
+			return -1;
+		}
+		return channel;
+		
+	}
+}
+
+
+struct Firework {
+	
+	/* Our beloved array of particles */
+	Particle particles[MAX_PARTICLES];
+	int rainbow;
+	float slowdown; 
+	float xspeed;          /* Base X Speed (To Allow Keyboard Direction Of Tail) */
+	float yspeed;          /* Base Y Speed (To Allow Keyboard Direction Of Tail) */
+	float zoom;   /* Used To Zoom Out                                   */
+
+	GLuint loop;           /* Misc Loop Variable                                 */
+	GLuint col;        /* Current Color Selection                            */
+	GLuint delay;          /* Rainbow Effect Delay                               */
+
+	Firework( GLfloat angle ) :
+		rainbow( true ),
+		slowdown( 3.0f ), /* Slow Down Particles                                */
+		yspeed( 200.0f ),
+		xspeed( angle ),
+		zoom( -40.0f ),
+		loop( 0 ),
+		col( 0 ),
+		delay( 0 )
+		
+		{ 
+			this->reset();
+		}
+
+
+	void cycle_colors(){
+		col = ( ++col ) % 12;
+	}
+
+	void reset(){
+		/* Reset all the particles */
+		for ( loop = 0; loop < MAX_PARTICLES; loop++ ) {
+			int color = ( loop + 1 ) / ( MAX_PARTICLES / 12 );
+			float xi, yi, zi;
+			xi =  ( float )( ( rand( ) % 50 ) - 26.0f ) * 10.0f;
+			yi = zi = ( float )( ( rand( ) % 50 ) - 25.0f ) * 10.0f;
+			
+			this->reset_particle( loop, color, xi, yi, zi );
+		}
+	}
+/* function to reset one particle to initial state */
+/* NOTE: I added this function to replace doing the same thing in several
+ * places and to also make it easy to move the pressing of numpad keys
+ * 2, 4, 6, and 8 into handleKeyPress function.
+ */
+	void
+	reset_particle( int num, int color, float xDir, float yDir, float zDir )
+		{
+			/* Make the particels active */
+			particles[num].active = TRUE;
+			/* Give the particles life */
+			particles[num].life = 7.0f;
+			/* Random Fade Speed */
+			particles[num].fade = ( float )( rand( ) %100 ) / 1000.0f + 0.003f;
+			/* Select Red Rainbow Color */
+			particles[num].r = colors[color][0];
+			/* Select Green Rainbow Color */
+			particles[num].g = colors[color][1];
+			/* Select Blue Rainbow Color */
+			particles[num].b = colors[color][2];
+			/* Set the position on the X axis */
+			particles[num].x = 0.0f;
+			/* Set the position on the Y axis */
+			particles[num].y = 0.0f;
+			/* Set the position on the Z axis */
+			particles[num].z = 0.0f;
+			/* Random Speed On X Axis */
+			particles[num].xi = xDir;
+			/* Random Speed On Y Axi */
+			particles[num].yi = yDir;
+			/* Random Speed On Z Axis */
+			particles[num].zi = zDir;
+			/* Set Horizontal Pull To Zero */
+			particles[num].xg = 0.0f;
+			/* Set Vertical Pull Downward */
+			particles[num].yg = -0.4f;
+			/* Set Pull On Z Axis To Zero */
+			particles[num].zg = 0.0f;
+
+			return;
+		}
+
+	void tick(){
+		cycle_colors();
+
+	/* Modify each of the particles */
+	for ( loop = 0; loop < MAX_PARTICLES; loop++ ) {
+		if ( particles[loop].active ) {
+			/* Grab Our Particle X Position */
+			float x = particles[loop].x;
+			/* Grab Our Particle Y Position */
+			float y = particles[loop].y;
+			/* Particle Z Position + Zoom */
+			float z = particles[loop].z + zoom;
+
+			glBindTexture( GL_TEXTURE_2D, fireworks_tex );
+
+			/* Draw The Particle Using Our RGB Values,
+			 * Fade The Particle Based On It's Life
+			 */
+			glColor4f( particles[loop].r,
+				   particles[loop].g,
+				   particles[loop].b,
+				   particles[loop].life );
+			
+			/* Build Quad From A Triangle Strip */
+			glBegin( GL_TRIANGLE_STRIP );
+
+			/* Top Right */
+			glTexCoord2d( 1, 1 );
+			glVertex3f( x + 0.5f, y + 0.5f, z );
+			/* Top Left */
+			glTexCoord2d( 0, 1 );
+			glVertex3f( x - 0.5f, y + 0.5f, z );
+			/* Bottom Right */
+			glTexCoord2d( 1, 0 );
+			glVertex3f( x + 0.5f, y - 0.5f, z );
+			/* Bottom Left */
+			glTexCoord2d( 0, 0 );
+			glVertex3f( x - 0.5f, y - 0.5f, z );
+			glEnd( );
+
+			/* Move On The X Axis By X Speed */
+			particles[loop].x += particles[loop].xi /
+				( slowdown * 1000 );
+			/* Move On The Y Axis By Y Speed */
+			particles[loop].y += particles[loop].yi /
+				( slowdown * 1000 );
+			/* Move On The Z Axis By Z Speed */
+			particles[loop].z += particles[loop].zi /
+				( slowdown * 1000 );
+
+			/* Take Pull On X Axis Into Account */
+			particles[loop].xi += particles[loop].xg;
+			/* Take Pull On Y Axis Into Account */
+			particles[loop].yi += particles[loop].yg;
+			/* Take Pull On Z Axis Into Account */
+			particles[loop].zi += particles[loop].zg;
+
+			/* Reduce Particles Life By 'Fade' */
+			particles[loop].life -= particles[loop].fade;
+
+			/* If the particle dies, revive it */
+			if ( particles[loop].life < 0.0f )
+			{
+				float xi, yi, zi;
+				xi = xspeed +
+					( float )( ( rand( ) % 60 ) - 32.0f );
+				yi = yspeed +
+					( float)( ( rand( ) % 60 ) - 30.0f );
+				zi = ( float )( ( rand( ) % 60 ) - 30.0f );
+				reset_particle( loop, col, xi, yi, zi );
+                        }
+		}
+	}
+	}
+
+};
+
+
+Firework left_firework(   180.0f );
+Firework right_firework( -180.0f );
+
 struct Reel;
 
 static Reel* reels[3];
@@ -132,12 +311,18 @@ get_rand( GLfloat max ){
 	return ( 1 + (float) ( max * (rand() / (RAND_MAX + 1.0))) );
 }
 
+static int AnointedStopPosition=-1;
+
 struct Reel {
+
+	enum {
+		BIG_WINNER=2
+	};
+	
 	GLfloat speed;
 	GLfloat degree;
 	bool stopped;
 	GLfloat begin;
-	int wait_for;
 
 	static void stop(){
 		int r=0;
@@ -169,84 +354,104 @@ struct Reel {
 		return num;
 	}
 
+	static void restart() {
+		AnointedStopPosition=-1;
+		for ( int x=0; x<3; ++x ){
+			reels[x]->start();
+		}
+	}
+	
+	
+	static void little_winner(){
+		int winner=reels[0]->position();
+		if ( winner == BIG_WINNER ){
+			winner++;
+		}
+		AnointedStopPosition=winner;
+		cout << "LITTLE WINNER: " << winner << endl;
+	}
+
+
+	static void big_winner(){
+		AnointedStopPosition=BIG_WINNER;
+		
+		cout << "BIG WINNER" << endl;
+	}
+	
 	static bool all_stopped(){
 		return num_stopped() == 3;
 	}
 
-	static int suggested_stop_position(){
-
-		for ( int x=0; x<3; ++x ){
-			if ( reels[x]->stopped ){
-				if ( reels[x]->position() == 2 ){
-					return -1;
-				} else if ( Reel::num_stopped() == 2 ) {
-					if ( reels[x]->wait_for ){
-						return reels[x]->wait_for;
-					} else {
-						int w=(int)get_rand(3);
-						cout << "win?: " << w << endl;
-						if ( w == 3 ){
-							return reels[x]->wait_for = reels[x]->position();
-						} else {
-							return 0;
-						}
-					}
-				} else {
+	static int stop_position( Reel *reel ){
+		int in_position = reel->position();
+		if ( AnointedStopPosition != -1 ){
+			return AnointedStopPosition;
+		}
+		cout << "Checking: " << Reel::num_stopped() << endl;
+		switch ( Reel::num_stopped() ) {
+		case 0:
+			return in_position;
+			break;
+		case 1:
+			for ( int x=0; x<3; ++x ){
+				if ( reels[ x ]->stopped && reels[ x ]->position() != BIG_WINNER ){
 					return reels[x]->position();
 				}
 			}
+			return in_position;
+			break;
+		default: // two stopped.. see if we won
+			int other_stopped;
+			for ( int x=0; x<3; ++x ){
+				if ( reels[ x ]->stopped ){
+					other_stopped = reels[x]->position() ;
+				}
+			}
+			cout << "Two, other: " << other_stopped << endl;
+
+			// if the others are stopped on BIG_WINNER,
+			// then don't influence the outcome
+			if ( other_stopped == BIG_WINNER ) {
+				return in_position;
+			}
+
+			int w=(int)get_rand(3);
+			cout << "win?: " << (w==1) << endl;
+			if ( 1 == w ){ // yep.. 
+				return AnointedStopPosition = other_stopped;
+			} else { // nope, not this time
+				if ( in_position == other_stopped ) { // is it in a winning position
+					if ( ++in_position > 9 ){
+						in_position=0;
+					}
+				}
+				return AnointedStopPosition=in_position;
+			}
 		}
-		return 0;
 	}
 
-	Reel() : speed( get_rand( 2 ) ),
-		 degree( get_rand( 360 ) ),
-		 begin(0),
-		 stopped(false),
-		 wait_for( 0 )
-		{
-			begin=speed;
-		}
-
-	int position(){
-		return (int)roundf((degree-30)/40);
-	}
-	bool at_stop_position(){
-		return ( (GLint)roundf( degree+10 ) % 40 == 0 );
-	}
 
 	void tick(){
-
 		if ( this->stopped ) {
 			return;
 		}
-
 		if ( ( speed < 0.2 ) ){
-
 			if ( this->at_stop_position() ){
-
-				if ( ( Reel::suggested_stop_position() < 0 ) || 
-				     ( Reel::suggested_stop_position() == this->position() )
-					) {
+				if ( Reel::stop_position( this ) == this->position() ) {
 					stopped=true;
 					cout << "Stopped on: " << this->position() << endl;
-					
 					if ( Reel::all_stopped() ){
-						cout << "Winner:     " << Reel::winner()   << endl;
-						if ( Reel::winner() != -1 ){
-							Mix_Chunk *sound = Mix_LoadWAV("jackpot.wav");
-							if(sound == NULL) {
-								fprintf(stderr, "Unable to load WAV file: %s\n", Mix_GetError());
-							} else {
-								int channel=Mix_PlayChannel(-1, sound, 0);
-								if(channel == -1) {
-									fprintf(stderr, "Unable to play WAV file: %s\n", Mix_GetError());
-								}
+						int winner = Reel::winner();
+						cout << "Winner:     " << winner << endl;
+						if ( winner > -1 ) {
+							if ( winner == Reel::BIG_WINNER ){
+								int channel = play_wav("klaxon.wav");
+								while(Mix_Playing(channel) != 0);
 							}
+							play_wav("jackpot.wav");
 						}
 					}
 				}
-
 			}
 		} else {
 			speed -= 0.001;
@@ -256,6 +461,28 @@ struct Reel {
 			degree -= 360;
 		}
 
+	}
+
+
+	Reel()
+		{
+			//		start();
+		}
+
+	void
+	start() {
+		stopped=false;
+		speed=get_rand( 2 );
+		degree=get_rand( 360 );
+		begin=0;
+		begin=speed;
+	}
+
+	int position(){
+		return (int)roundf((degree-30)/40);
+	}
+	bool at_stop_position(){
+		return ( (GLint)roundf( degree+10 ) % 40 == 0 );
 	}
 };
 
@@ -275,6 +502,8 @@ void Quit( int returnCode )
     glDeleteTextures( 1, &fireworks_tex );
     /* clean up the window */
     SDL_Quit( );
+
+    records.close();
 
     /* and exit appropriately */
     exit( returnCode );
@@ -338,48 +567,6 @@ int LoadGLTextures( )
 
 }
 
-/* function to reset one particle to initial state */
-/* NOTE: I added this function to replace doing the same thing in several
- * places and to also make it easy to move the pressing of numpad keys
- * 2, 4, 6, and 8 into handleKeyPress function.
- */
-void
-ResetParticle( int num, int color, float xDir, float yDir, float zDir )
-{
-    /* Make the particels active */
-    particles[num].active = TRUE;
-    /* Give the particles life */
-    particles[num].life = 7.0f;
-    /* Random Fade Speed */
-    particles[num].fade = ( float )( rand( ) %100 ) / 1000.0f + 0.003f;
-    /* Select Red Rainbow Color */
-    particles[num].r = colors[color][0];
-    /* Select Green Rainbow Color */
-    particles[num].g = colors[color][1];
-    /* Select Blue Rainbow Color */
-    particles[num].b = colors[color][2];
-    /* Set the position on the X axis */
-    particles[num].x = 0.0f;
-    /* Set the position on the Y axis */
-    particles[num].y = 0.0f;
-    /* Set the position on the Z axis */
-    particles[num].z = 0.0f;
-    /* Random Speed On X Axis */
-    particles[num].xi = xDir;
-    /* Random Speed On Y Axi */
-    particles[num].yi = yDir;
-    /* Random Speed On Z Axis */
-    particles[num].zi = zDir;
-    /* Set Horizontal Pull To Zero */
-    particles[num].xg = 0.0f;
-    /* Set Vertical Pull Downward */
-    particles[num].yg = -0.4f;
-    /* Set Pull On Z Axis To Zero */
-    particles[num].zg = 0.0f;
-
-    return;
-}
-
 
 /* function to reset our viewport after a window resize */
 int resizeWindow( int width, int height )
@@ -415,41 +602,70 @@ int resizeWindow( int width, int height )
 /* function to handle key press events */
 void handleKeyPress( SDL_keysym *keysym )
 {
-    switch ( keysym->sym )
-	{
-	case SDLK_ESCAPE:
-	    /* ESC key was pressed */
-	    Quit( 0 );
-	    break;
-	case SDLK_SPACE:
-		Reel::stop();
-		break;
-	case SDLK_F1:
-	    /* 'f' key was pressed
-	     * this toggles fullscreen mode
-	     */
-	    SDL_WM_ToggleFullScreen( surface );
-	    break;
-	case SDLK_RETURN:
-	    /* Return key was pressed
-	     * this toggles the rainbow color effect
-	     */
-	    rainbow = !rainbow;
-	    delay = 25;
-	    break;
-	case SDLK_TAB:
-	    /* Spacebar was pressed
-	     * this turns off rainbow-ing and manually cycles through colors
-	     */
-	    rainbow = FALSE;
-	    delay = 0;
-	    col = ( ++col ) % 12;
-	    break;
-	default:
-	    break;
+	static bool in_scan=false;
+	static std::string scan;
+
+	char ch = keysym->unicode & 0x7F;
+	if ( ch == 0 ){
+		return;
 	}
 
-    return;
+//  	cout << ch;
+//  	cout.flush();
+
+	if ( ch == '%' ){
+		in_scan=true;
+		return;
+	}
+
+	if ( in_scan ){
+//		cout << "IN SCAN" << endl;
+		if ( boost::ifind_first( scan, ";E?# " ) ){
+			cout << "ERR" << endl;
+			in_scan=false;
+			scan.clear();
+			records << time(0) << scan << endl;
+			play_wav("error.wav");
+		} else if ( boost::ifind_first( scan, "end]" ) ){
+			cout << "Scanned: " << scan << endl;
+			scan.clear();
+			Reel::restart();
+			in_scan = false;
+		} else {
+			scan.push_back( ch );
+		}
+		return;
+	}
+
+	switch ( keysym->sym ){
+	case SDLK_ESCAPE:
+		/* ESC key was pressed */
+		Quit( 0 );
+		break;
+	case SDLK_w:
+		if ( keysym->mod & KMOD_SHIFT ) {
+			Reel::big_winner();
+		} else {
+			Reel::little_winner();
+		}
+		break;
+// 	case SDLK_RETURN:
+// 		Reel::stop();
+// 		break;
+	case SDLK_BACKSPACE:
+		Reel::restart();
+		break;
+	case SDLK_f:
+		/* 'f' key was pressed
+		 * this toggles fullscreen mode
+		 */
+		SDL_WM_ToggleFullScreen( surface );
+		break;
+	default:
+		break;
+	}
+
+	return;
 }
 
 /* general OpenGL initialization function */
@@ -506,17 +722,8 @@ int initGL( GLvoid )
     /* Create Texture Coords */
     gluQuadricTexture( quadratic, GL_TRUE );
 
-    /* Reset all the particles */
-    for ( loop = 0; loop < MAX_PARTICLES; loop++ )
-	{
-	    int color = ( loop + 1 ) / ( MAX_PARTICLES / 12 );
-	    float xi, yi, zi;
-	    xi =  ( float )( ( rand( ) % 50 ) - 26.0f ) * 10.0f;
-	    yi = zi = ( float )( ( rand( ) % 50 ) - 25.0f ) * 10.0f;
-
-	    ResetParticle( loop, color, xi, yi, zi );
-        }
-
+    left_firework.reset();
+    right_firework.reset();
 
     /* Set up Waving Logo */
     for ( int x = 0; x < 45; x++ )
@@ -650,78 +857,12 @@ drawFireWorks(){
 	/* Type Of Blending To Perform */
 	glBlendFunc( GL_SRC_ALPHA, GL_ONE );
 
-	glTranslatef( -1.0f, 8.0f, -4.0f );          // move 5 units into the screen.
+ 	glTranslatef( -28.0f, -2.0f, -4.0f );          // move 5 units into the screen.
+ 	left_firework.tick();
 
-	/* Modify each of the particles */
-	for ( loop = 0; loop < MAX_PARTICLES; loop++ ) {
-		if ( particles[loop].active ) {
-			/* Grab Our Particle X Position */
-			float x = particles[loop].x;
-			/* Grab Our Particle Y Position */
-			float y = particles[loop].y;
-			/* Particle Z Position + Zoom */
-			float z = particles[loop].z + zoom;
+ 	glTranslatef( 57.0f, 0.0f, -4.0f );          // move 5 units into the screen.
+ 	right_firework.tick();
 
-			glBindTexture( GL_TEXTURE_2D, fireworks_tex );
-
-			/* Draw The Particle Using Our RGB Values,
-			 * Fade The Particle Based On It's Life
-			 */
-			glColor4f( particles[loop].r,
-				   particles[loop].g,
-				   particles[loop].b,
-				   particles[loop].life );
-			
-			/* Build Quad From A Triangle Strip */
-			glBegin( GL_TRIANGLE_STRIP );
-
-			/* Top Right */
-			glTexCoord2d( 1, 1 );
-			glVertex3f( x + 0.5f, y + 0.5f, z );
-			/* Top Left */
-			glTexCoord2d( 0, 1 );
-			glVertex3f( x - 0.5f, y + 0.5f, z );
-			/* Bottom Right */
-			glTexCoord2d( 1, 0 );
-			glVertex3f( x + 0.5f, y - 0.5f, z );
-			/* Bottom Left */
-			glTexCoord2d( 0, 0 );
-			glVertex3f( x - 0.5f, y - 0.5f, z );
-			glEnd( );
-
-			/* Move On The X Axis By X Speed */
-			particles[loop].x += particles[loop].xi /
-				( slowdown * 1000 );
-			/* Move On The Y Axis By Y Speed */
-			particles[loop].y += particles[loop].yi /
-				( slowdown * 1000 );
-			/* Move On The Z Axis By Z Speed */
-			particles[loop].z += particles[loop].zi /
-				( slowdown * 1000 );
-
-			/* Take Pull On X Axis Into Account */
-			particles[loop].xi += particles[loop].xg;
-			/* Take Pull On Y Axis Into Account */
-			particles[loop].yi += particles[loop].yg;
-			/* Take Pull On Z Axis Into Account */
-			particles[loop].zi += particles[loop].zg;
-
-			/* Reduce Particles Life By 'Fade' */
-			particles[loop].life -= particles[loop].fade;
-
-			/* If the particle dies, revive it */
-			if ( particles[loop].life < 0.0f )
-			{
-				float xi, yi, zi;
-				xi = xspeed +
-					( float )( ( rand( ) % 60 ) - 32.0f );
-				yi = yspeed +
-					( float)( ( rand( ) % 60 ) - 30.0f );
-				zi = ( float )( ( rand( ) % 60 ) - 30.0f );
-				ResetParticle( loop, col, xi, yi, zi );
-                        }
-		}
-	}
 	glDisable(GL_BLEND);
 	glEnable(GL_DEPTH_TEST);
 	glPopMatrix();
@@ -750,10 +891,8 @@ drawReels(){
 
 	// spinner rod
 	glPushMatrix();
-//	    glRotatef( reels[0]->degree,1.0f,0.0f,0.0f);  // Rotate On The X Axis
 	    glRotatef( 90,0.0f,1.0f,0.0f);		  // Rotate On The Y Axis
  	    glTranslatef(0.0f,0.0f,-3.4f);	          // Center the cylinder 
-	    //  glDisable( GL_BLEND );
 	    glBindTexture( GL_TEXTURE_2D, cylinder_spinner_tex );
 	    gluCylinder(quadratic,0.2f,0.2f,5.0f,9,3);    // Draw Our Cylinder 
 	glPopMatrix();
@@ -762,7 +901,7 @@ drawReels(){
 	glPushMatrix();
 	    glRotatef( reels[0]->degree,1.0f,0.0f,0.0f);	  // Rotate On The X Axis
 	    glRotatef( 90,0.0f,1.0f,0.0f);		  // Rotate On The Y Axis
- 	    glTranslatef(0.0f,0.0f,-0.4f);	          // Center the cylinder 
+ 	    glTranslatef(0.0f,0.0f,-0.20f);	          // Center the cylinder 
 	    glBindTexture( GL_TEXTURE_2D, cylinder_side_tex );
 	    gluDisk(quadratic,0.2f,1.0f,9,3);             // Draw A Disc (CD Shape)
 	glPopMatrix();
@@ -771,7 +910,7 @@ drawReels(){
 	glPushMatrix();
 	    glRotatef( reels[0]->degree,1.0f,0.0f,0.0f);	  // Rotate On The X Axis
 	    glRotatef( 90,0.0f,1.0f,0.0f);		  // Rotate On The Y Axis
- 	    glTranslatef(0.0f,0.0f,-0.4f);	          // Center the cylinder 
+ 	    glTranslatef(0.0f,0.0f,-0.20f);	          // Center the cylinder 
 	    glBindTexture( GL_TEXTURE_2D, reels_tex );
 	    gluCylinder(quadratic,1.0f,1.0f,0.7f,9,3);    // Draw Our Cylinder 
 	glPopMatrix();
@@ -780,7 +919,7 @@ drawReels(){
 	glPushMatrix();
 	    glRotatef( reels[1]->degree, 1.0f,0.0f,0.0f);	  // Rotate On The X Axis
 	    glRotatef( 90,0.0f,1.0f,0.0f);		  // Rotate On The Y Axis
- 	    glTranslatef( 0.0f, 0.0f,-1.45f );	          // Center the cylinder
+ 	    glTranslatef( 0.0f, 0.0f,-1.38f );	          // Center the cylinder
 	    glBindTexture( GL_TEXTURE_2D, reels_tex );
 	    gluCylinder(quadratic, 1.0f, 1.0f, 0.7f, 9, 1);    // Draw Our Cylinder
 	glPopMatrix();
@@ -817,14 +956,12 @@ int drawGLScene( GLvoid )
 	static GLint Frames = 0;
 
 // 	
-// 	
 	drawLogo();
 	drawReels();
 //	drawFireWorks();
-// 	if ( Reel::all_stopped() && Reel::winner() != -1 ){
+ 	if ( Reel::all_stopped() && Reel::winner() != -1 ){
  		drawFireWorks();
-// 	}
-
+ 	}
 
 	/* Draw it to the screen */
 	SDL_GL_SwapBuffers( );
@@ -836,7 +973,7 @@ int drawGLScene( GLvoid )
 		if (t - T0 >= 5000) {
 			GLfloat seconds = (t - T0) / 1000.0;
 			GLfloat fps = Frames / seconds;
-			printf("%d frames in %g seconds = %g FPS\n", Frames, seconds, fps);
+//			printf("%d frames in %g seconds = %g FPS\n", Frames, seconds, fps);
 			T0 = t;
 			Frames = 0;
 		}
@@ -858,6 +995,32 @@ int main( int argc, char **argv )
 		reels[x] = new Reel;
 	}
 
+	typedef std::vector< boost::iterator_range<string::iterator> > find_vector_type;
+	typedef vector< string > split_vector_type;
+    
+	std::fstream log( RECORDS_LOG_FILE,std::ios::in);
+	if ( log ){
+		while( !log.eof()) {
+			char line[200];
+			log.getline( line, 200 );
+			split_vector_type record; // #2: Search for tokens
+			boost::split( record, line, boost::is_any_of("\\") );
+			if ( record.size() > 2 ){
+				try {
+					patrons[ boost::lexical_cast<unsigned int>( record[0] ) ] =
+						boost::lexical_cast<time_t>( record[1] );
+				}
+				catch ( const boost::bad_lexical_cast & ) { }
+			}
+		}
+	} else {
+		cout << "Unable to open " << RECORDS_LOG_FILE << " to read history from" <<endl;
+	}
+
+	records.open( RECORDS_LOG_FILE, ios::out );
+	if ( ! records ){
+		cerr << "Unable to open " << RECORDS_LOG_FILE << " to write history to" << endl;
+	}
     /* Flags to pass to SDL_SetVideoMode */
     int videoFlags;
     /* main loop variable */
@@ -959,6 +1122,7 @@ int main( int argc, char **argv )
 	    Quit( 1 );
 	}
 
+    SDL_EnableUNICODE(true);
     /* Enable key repeat */
     if ( ( SDL_EnableKeyRepeat( 100, SDL_DEFAULT_REPEAT_INTERVAL ) ) )
 	{
@@ -995,7 +1159,7 @@ int main( int argc, char **argv )
 				isActive = FALSE;
 			    else
 				isActive = TRUE;
-			    break;			    
+			    break;
 			case SDL_VIDEORESIZE:
 			    /* handle resize event */
 			    surface = SDL_SetVideoMode( event.resize.w,
@@ -1024,10 +1188,10 @@ int main( int argc, char **argv )
 
 	    /* If rainbow coloring is turned on, cycle the colors */
 //	    if ( rainbow && ( delay > 25 ) )
-		col = ( ++col ) % 12;
+
 
 	    /* draw the scene */
-	    if ( isActive )
+	    //    if ( isActive )
 		drawGLScene( );
 
 	}
